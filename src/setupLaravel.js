@@ -23,9 +23,12 @@ const __dirname = path.dirname(fileURLToPath(import.meta.url));
 // ---------------- CONFIG ----------------
 const RELEASE = "8.4.14"; // 🔢 change when PHP version updates
 const BIN_DIR = path.resolve("./bin");
-const PHP_BIN = path.join(BIN_DIR, "php");
+const IS_WINDOWS = os.platform() === "win32";
+const PHP_BIN = path.join(BIN_DIR, IS_WINDOWS ? "php.exe" : "php");
 const COMPOSER_BIN = path.join(BIN_DIR, "composer.phar");
 const BASE_URL = `https://github.com/souravdutt/php-binaries/releases/download/${RELEASE}`;
+// Official PHP Windows release: includes php8.dll and all required DLLs (php8.dll is required by php.exe)
+const PHP_WIN_URL = `https://windows.php.net/downloads/releases/php-${RELEASE}-nts-Win32-vs17-x64.zip`;
 const COMPOSER_URL = "https://github.com/souravdutt/php-binaries/raw/main/composer/2.8.12/composer.phar";
 
 // ---------------- UTILS ----------------
@@ -48,7 +51,19 @@ async function downloadFile(url, dest, label = "Downloading") {
     https.get(url, (response) => {
       // Handle redirects
       if (response.statusCode === 302 || response.statusCode === 301) {
-        return downloadFile(response.headers.location, dest, label).then(resolve).catch(reject);
+        file.close(() => {
+          downloadFile(response.headers.location, dest, label).then(resolve).catch(reject);
+        });
+        return;
+      }
+
+      // Reject on HTTP errors
+      if (response.statusCode !== 200) {
+        file.close(() => {
+          if (fs.existsSync(dest)) fs.unlinkSync(dest);
+          reject(new Error(`HTTP ${response.statusCode} while downloading ${url}`));
+        });
+        return;
       }
       
       const totalSize = parseInt(response.headers['content-length'], 10);
@@ -76,8 +91,10 @@ async function downloadFile(url, dest, label = "Downloading") {
         resolve();
       });
     }).on('error', (err) => {
-      fs.unlinkSync(dest);
-      reject(err);
+      file.close(() => {
+        if (fs.existsSync(dest)) fs.unlinkSync(dest);
+        reject(err);
+      });
     });
   });
 }
@@ -99,7 +116,9 @@ async function setupBinaries() {
   ensureDir(BIN_DIR);
   const { os, ext } = detectPlatform();
   const filename = getBinaryFilename({ os, ext });
-  const url = `${BASE_URL}/${filename}`;
+  // Use official PHP Windows distribution for Windows (includes php8.dll and all required DLLs).
+  // The php-binaries custom zip only contains the thin php.exe launcher without php8.dll.
+  const url = IS_WINDOWS ? PHP_WIN_URL : `${BASE_URL}/${filename}`;
 
   if (!fs.existsSync(PHP_BIN)) {
     const archivePath = path.join(BIN_DIR, filename);
@@ -125,7 +144,7 @@ async function setupBinaries() {
       .filter((f) => f.startsWith("php") && !f.endsWith(".gz") && !f.endsWith(".zip"));
 
     const phpFile = phpCandidates.find((f) =>
-      os === "win" ? f.endsWith(".exe") : !f.includes("fpm")
+      os === "win" ? f === "php.exe" : !f.includes("fpm")
     );
     
     if (!phpFile) {
@@ -134,7 +153,10 @@ async function setupBinaries() {
     }
     
     const phpPath = path.join(BIN_DIR, phpFile);
-    fs.renameSync(phpPath, PHP_BIN);
+    // Only rename if source and destination are different (e.g. php-8.4.14-linux → php)
+    if (phpPath !== PHP_BIN) {
+      fs.renameSync(phpPath, PHP_BIN);
+    }
     fs.chmodSync(PHP_BIN, 0o755);
     extractSpinner.succeed("PHP binary extracted!");
   } else {
