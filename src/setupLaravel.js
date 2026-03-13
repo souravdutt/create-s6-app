@@ -23,7 +23,8 @@ const __dirname = path.dirname(fileURLToPath(import.meta.url));
 // ---------------- CONFIG ----------------
 const RELEASE = "8.4.14"; // 🔢 change when PHP version updates
 const BIN_DIR = path.resolve("./bin");
-const PHP_BIN = path.join(BIN_DIR, "php");
+const IS_WINDOWS = os.platform() === "win32";
+const PHP_BIN = path.join(BIN_DIR, IS_WINDOWS ? "php.exe" : "php");
 const COMPOSER_BIN = path.join(BIN_DIR, "composer.phar");
 const BASE_URL = `https://github.com/souravdutt/php-binaries/releases/download/${RELEASE}`;
 const COMPOSER_URL = "https://github.com/souravdutt/php-binaries/raw/main/composer/2.8.12/composer.phar";
@@ -48,7 +49,10 @@ async function downloadFile(url, dest, label = "Downloading") {
     https.get(url, (response) => {
       // Handle redirects
       if (response.statusCode === 302 || response.statusCode === 301) {
-        return downloadFile(response.headers.location, dest, label).then(resolve).catch(reject);
+        file.close(() => {
+          downloadFile(response.headers.location, dest, label).then(resolve).catch(reject);
+        });
+        return;
       }
       
       const totalSize = parseInt(response.headers['content-length'], 10);
@@ -76,7 +80,9 @@ async function downloadFile(url, dest, label = "Downloading") {
         resolve();
       });
     }).on('error', (err) => {
-      fs.unlinkSync(dest);
+      file.close(() => {
+        if (fs.existsSync(dest)) fs.unlinkSync(dest);
+      });
       reject(err);
     });
   });
